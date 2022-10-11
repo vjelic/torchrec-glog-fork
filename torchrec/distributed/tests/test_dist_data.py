@@ -227,7 +227,7 @@ class KJTAllToAllTest(MultiProcessTestBase):
         pg = dist.group.WORLD
         lengths_a2a = KJTAllToAll(
             # pyre-fixme[6]: For 1st param expected `ProcessGroup` but got
-            #  `Optional[ProcessGroup]`.
+            #  `Optional[_distributed_c10d.ProcessGroup]`.
             pg=pg,
             splits=splits,
             device=device,
@@ -319,7 +319,7 @@ class PooledEmbeddingsAllToAllTest(MultiProcessTestBase):
 
         a2a = PooledEmbeddingsAllToAll(
             # pyre-fixme[6]: For 1st param expected `ProcessGroup` but got
-            #  `Optional[ProcessGroup]`.
+            #  `Optional[_distributed_c10d.ProcessGroup]`.
             pg=pg,
             dim_sum_per_rank=dim_sum_per_rank,
             device=device,
@@ -463,7 +463,8 @@ class PooledEmbeddingsReduceScatterTest(MultiProcessTestBase):
         codecs = get_qcomm_codecs(qcomms_config)
 
         rs = PooledEmbeddingsReduceScatter(
-            # pyre-ignore
+            # pyre-fixme[6]: For 1st param expected `ProcessGroup` but got
+            #  `Optional[_distributed_c10d.ProcessGroup]`.
             pg,
             codecs=codecs,
         ).cuda(rank)
@@ -584,7 +585,8 @@ class PooledEmbeddingsReduceScatterVTest(MultiProcessTestBase):
         codecs = get_qcomm_codecs(qcomms_config)
 
         rs = PooledEmbeddingsReduceScatter(
-            # pyre-ignore
+            # pyre-fixme[6]: For 1st param expected `ProcessGroup` but got
+            #  `Optional[_distributed_c10d.ProcessGroup]`.
             pg,
             codecs=codecs,
         ).cuda(rank)
@@ -717,7 +719,7 @@ class PooledEmbeddingsAllGatherTest(MultiProcessTestBase):
         input = input.cuda(rank)
         input.requires_grad = True
         # pyre-fixme[6]: For 1st param expected `ProcessGroup` but got
-        #  `Optional[ProcessGroup]`.
+        #  `Optional[_distributed_c10d.ProcessGroup]`.
         ag = PooledEmbeddingsAllGather(pg).cuda(rank)
         actual_output = ag(input).wait()
         s = torch.sum(actual_output)
