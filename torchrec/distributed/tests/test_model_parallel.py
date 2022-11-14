@@ -17,7 +17,7 @@ import torch.distributed as dist
 import torch.nn as nn
 import torchrec.distributed as trec_dist
 from fbgemm_gpu.split_embedding_configs import EmbOptimType
-from hypothesis import given, settings, Verbosity
+from hypothesis import assume, given, settings, Verbosity
 from torchrec.distributed.embedding_types import EmbeddingComputeKernel
 from torchrec.distributed.embeddingbag import (
     EmbeddingBagCollectionSharder,
@@ -87,7 +87,7 @@ class ModelParallelTest(ModelParallelTestShared):
                 ),
             ]
         ),
-        apply_overlapped_optimizer_config=st.sampled_from(
+        apply_optimizer_in_backward_config=st.sampled_from(
             [
                 None,
                 {
@@ -96,6 +96,7 @@ class ModelParallelTest(ModelParallelTestShared):
                 },
             ]
         ),
+        variable_batch_size=st.booleans(),
     )
     @settings(verbosity=Verbosity.verbose, max_examples=4, deadline=None)
     def test_sharding_nccl_rw(
@@ -104,10 +105,15 @@ class ModelParallelTest(ModelParallelTestShared):
         sharding_type: str,
         kernel_type: str,
         qcomms_config: Optional[QCommsConfig],
-        apply_overlapped_optimizer_config: Optional[
+        apply_optimizer_in_backward_config: Optional[
             Dict[str, Tuple[Type[torch.optim.Optimizer], Dict[str, Any]]]
         ],
+        variable_batch_size: bool,
     ) -> None:
+        assume(
+            sharder_type == SharderType.EMBEDDING_BAG_COLLECTION.value
+            or not variable_batch_size
+        )
         self._test_sharding(
             sharders=[
                 cast(
@@ -118,12 +124,14 @@ class ModelParallelTest(ModelParallelTestShared):
                         kernel_type,
                         qcomms_config=qcomms_config,
                         device=torch.device("cuda"),
+                        variable_batch_size=variable_batch_size,
                     ),
                 ),
             ],
             qcomms_config=qcomms_config,
             backend="nccl",
-            apply_overlapped_optimizer_config=apply_overlapped_optimizer_config,
+            apply_optimizer_in_backward_config=apply_optimizer_in_backward_config,
+            variable_batch_size=variable_batch_size,
         )
 
     @unittest.skipIf(
@@ -148,7 +156,7 @@ class ModelParallelTest(ModelParallelTestShared):
                 EmbeddingComputeKernel.DENSE.value,
             ]
         ),
-        apply_overlapped_optimizer_config=st.sampled_from([None]),
+        apply_optimizer_in_backward_config=st.sampled_from([None]),
         # TODO - need to enable optimizer overlapped behavior for data_parallel tables
     )
     @settings(verbosity=Verbosity.verbose, max_examples=2, deadline=None)
@@ -157,7 +165,7 @@ class ModelParallelTest(ModelParallelTestShared):
         sharder_type: str,
         sharding_type: str,
         kernel_type: str,
-        apply_overlapped_optimizer_config: Optional[
+        apply_optimizer_in_backward_config: Optional[
             Dict[str, Tuple[Type[torch.optim.Optimizer], Dict[str, Any]]]
         ],
     ) -> None:
@@ -168,7 +176,7 @@ class ModelParallelTest(ModelParallelTestShared):
                 create_test_sharder(sharder_type, sharding_type, kernel_type),
             ],
             backend="nccl",
-            apply_overlapped_optimizer_config=apply_overlapped_optimizer_config,
+            apply_optimizer_in_backward_config=apply_optimizer_in_backward_config,
         )
 
     @unittest.skipIf(
@@ -202,7 +210,7 @@ class ModelParallelTest(ModelParallelTestShared):
                 ),
             ]
         ),
-        apply_overlapped_optimizer_config=st.sampled_from(
+        apply_optimizer_in_backward_config=st.sampled_from(
             [
                 None,
                 {
@@ -211,6 +219,7 @@ class ModelParallelTest(ModelParallelTestShared):
                 },
             ]
         ),
+        variable_batch_size=st.booleans(),
     )
     @settings(verbosity=Verbosity.verbose, max_examples=8, deadline=None)
     def test_sharding_nccl_cw(
@@ -219,10 +228,15 @@ class ModelParallelTest(ModelParallelTestShared):
         sharding_type: str,
         kernel_type: str,
         qcomms_config: Optional[QCommsConfig],
-        apply_overlapped_optimizer_config: Optional[
+        apply_optimizer_in_backward_config: Optional[
             Dict[str, Tuple[Type[torch.optim.Optimizer], Dict[str, Any]]]
         ],
+        variable_batch_size: bool,
     ) -> None:
+        assume(
+            sharder_type == SharderType.EMBEDDING_BAG_COLLECTION.value
+            or not variable_batch_size
+        )
         self._test_sharding(
             # pyre-ignore[6]
             sharders=[
@@ -232,6 +246,7 @@ class ModelParallelTest(ModelParallelTestShared):
                     kernel_type,
                     qcomms_config=qcomms_config,
                     device=torch.device("cuda"),
+                    variable_batch_size=variable_batch_size,
                 ),
             ],
             backend="nccl",
@@ -240,7 +255,8 @@ class ModelParallelTest(ModelParallelTestShared):
                 table.name: ParameterConstraints(min_partition=4)
                 for table in self.tables
             },
-            apply_overlapped_optimizer_config=apply_overlapped_optimizer_config,
+            apply_optimizer_in_backward_config=apply_optimizer_in_backward_config,
+            variable_batch_size=variable_batch_size,
         )
 
     @unittest.skipIf(
@@ -275,7 +291,7 @@ class ModelParallelTest(ModelParallelTestShared):
                 ),
             ]
         ),
-        apply_overlapped_optimizer_config=st.sampled_from(
+        apply_optimizer_in_backward_config=st.sampled_from(
             [
                 None,
                 {
@@ -284,6 +300,7 @@ class ModelParallelTest(ModelParallelTestShared):
                 },
             ]
         ),
+        variable_batch_size=st.booleans(),
     )
     @settings(verbosity=Verbosity.verbose, max_examples=8, deadline=None)
     def test_sharding_nccl_tw(
@@ -292,10 +309,15 @@ class ModelParallelTest(ModelParallelTestShared):
         sharding_type: str,
         kernel_type: str,
         qcomms_config: Optional[QCommsConfig],
-        apply_overlapped_optimizer_config: Optional[
+        apply_optimizer_in_backward_config: Optional[
             Dict[str, Tuple[Type[torch.optim.Optimizer], Dict[str, Any]]]
         ],
+        variable_batch_size: bool,
     ) -> None:
+        assume(
+            sharder_type == SharderType.EMBEDDING_BAG_COLLECTION.value
+            or not variable_batch_size
+        )
         self._test_sharding(
             # pyre-ignore[6]
             sharders=[
@@ -305,11 +327,13 @@ class ModelParallelTest(ModelParallelTestShared):
                     kernel_type,
                     qcomms_config=qcomms_config,
                     device=torch.device("cuda"),
+                    variable_batch_size=variable_batch_size,
                 ),
             ],
             backend="nccl",
             qcomms_config=qcomms_config,
-            apply_overlapped_optimizer_config=apply_overlapped_optimizer_config,
+            apply_optimizer_in_backward_config=apply_optimizer_in_backward_config,
+            variable_batch_size=variable_batch_size,
         )
 
     # pyre-fixme[56]
@@ -341,7 +365,7 @@ class ModelParallelTest(ModelParallelTestShared):
                 ),
             ]
         ),
-        apply_overlapped_optimizer_config=st.sampled_from(
+        apply_optimizer_in_backward_config=st.sampled_from(
             [
                 None,
                 {
@@ -358,7 +382,7 @@ class ModelParallelTest(ModelParallelTestShared):
         sharding_type: str,
         kernel_type: str,
         qcomms_config: Optional[QCommsConfig],
-        apply_overlapped_optimizer_config: Optional[
+        apply_optimizer_in_backward_config: Optional[
             Dict[str, Tuple[Type[torch.optim.Optimizer], Dict[str, Any]]]
         ],
     ) -> None:
@@ -375,7 +399,7 @@ class ModelParallelTest(ModelParallelTestShared):
             ],
             qcomms_config=qcomms_config,
             backend="gloo",
-            apply_overlapped_optimizer_config=apply_overlapped_optimizer_config,
+            apply_optimizer_in_backward_config=apply_optimizer_in_backward_config,
         )
 
     # pyre-fixme[56]
@@ -408,7 +432,7 @@ class ModelParallelTest(ModelParallelTestShared):
                 ),
             ]
         ),
-        apply_overlapped_optimizer_config=st.sampled_from(
+        apply_optimizer_in_backward_config=st.sampled_from(
             [
                 None,
                 {
@@ -425,7 +449,7 @@ class ModelParallelTest(ModelParallelTestShared):
         sharding_type: str,
         kernel_type: str,
         qcomms_config: Optional[QCommsConfig],
-        apply_overlapped_optimizer_config: Optional[
+        apply_optimizer_in_backward_config: Optional[
             Dict[str, Tuple[Type[torch.optim.Optimizer], Dict[str, Any]]]
         ],
     ) -> None:
@@ -448,7 +472,7 @@ class ModelParallelTest(ModelParallelTestShared):
                 table.name: ParameterConstraints(min_partition=4)
                 for table in self.tables
             },
-            apply_overlapped_optimizer_config=apply_overlapped_optimizer_config,
+            apply_optimizer_in_backward_config=apply_optimizer_in_backward_config,
         )
 
     # pyre-fixme[56]
@@ -708,6 +732,8 @@ class ModelParallelStateDictTest(unittest.TestCase):
         )
 
     def test_meta_device_dmp_state_dict(self) -> None:
+        # pyre-fixme[6]: For 1st param expected `ProcessGroup` but got
+        #  `Optional[ProcessGroup]`.
         env = ShardingEnv.from_process_group(dist.GroupMember.WORLD)
 
         m1 = TestSparseNN(

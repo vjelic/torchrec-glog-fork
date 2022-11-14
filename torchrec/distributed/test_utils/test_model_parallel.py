@@ -62,9 +62,10 @@ class ModelParallelTestShared(MultiProcessTestBase):
         constraints: Optional[Dict[str, ParameterConstraints]] = None,
         model_class: Type[TestSparseNNBase] = TestSparseNN,
         qcomms_config: Optional[QCommsConfig] = None,
-        apply_overlapped_optimizer_config: Optional[
+        apply_optimizer_in_backward_config: Optional[
             Dict[str, Tuple[Type[torch.optim.Optimizer], Dict[str, Any]]]
         ] = None,
+        variable_batch_size: bool = False,
     ) -> None:
         self._run_multi_process_test(
             callable=sharding_single_rank_test,
@@ -79,5 +80,6 @@ class ModelParallelTestShared(MultiProcessTestBase):
             optim=EmbOptimType.EXACT_SGD,
             constraints=constraints,
             qcomms_config=qcomms_config,
-            apply_overlapped_optimizer_config=apply_overlapped_optimizer_config,
+            variable_batch_size=variable_batch_size,
+            apply_optimizer_in_backward_config=apply_optimizer_in_backward_config,
         )

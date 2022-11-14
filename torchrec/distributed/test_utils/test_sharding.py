@@ -41,7 +41,7 @@ from torchrec.distributed.types import (
     ShardingType,
 )
 from torchrec.modules.embedding_configs import BaseEmbeddingConfig, EmbeddingBagConfig
-from torchrec.optim.apply_overlapped_optimizer import apply_overlapped_optimizer
+from torchrec.optim.apply_optimizer_in_backward import apply_optimizer_in_backward
 from torchrec.optim.keyed import CombinedOptimizer, KeyedOptimizerWrapper
 from typing_extensions import Protocol
 
@@ -60,6 +60,7 @@ def create_test_sharder(
     fused_params: Optional[Dict[str, Any]] = None,
     qcomms_config: Optional[QCommsConfig] = None,
     device: Optional[torch.device] = None,
+    variable_batch_size: bool = False,
 ) -> Union[TestEBSharder, TestEBCSharder, TestETSharder, TestETCSharder]:
     if fused_params is None:
         fused_params = {}
@@ -74,7 +75,11 @@ def create_test_sharder(
         )
     elif sharder_type == SharderType.EMBEDDING_BAG_COLLECTION.value:
         return TestEBCSharder(
-            sharding_type, kernel_type, fused_params, qcomm_codecs_registry
+            sharding_type,
+            kernel_type,
+            fused_params,
+            qcomm_codecs_registry,
+            variable_batch_size,
         )
     elif sharder_type == SharderType.EMBEDDING_TOWER.value:
         return TestETSharder(
@@ -100,6 +105,7 @@ class ModelInputCallable(Protocol):
         dedup_tables: Optional[
             Union[List[EmbeddingTableConfig], List[EmbeddingBagConfig]]
         ] = None,
+        variable_batch_size: bool = False,
     ) -> Tuple["ModelInput", List["ModelInput"]]:
         ...
 
@@ -112,6 +118,7 @@ def generate_inputs(
     weighted_tables: Optional[List[EmbeddingTableConfig]] = None,
     batch_size: int = 4,
     num_float_features: int = 16,
+    variable_batch_size: bool = False,
 ) -> Tuple[ModelInput, List[ModelInput]]:
     return generate(
         batch_size=batch_size,
@@ -120,6 +127,7 @@ def generate_inputs(
         tables=tables,
         dedup_tables=dedup_tables,
         weighted_tables=weighted_tables or [],
+        variable_batch_size=variable_batch_size,
     )
 
 
@@ -135,6 +143,8 @@ def gen_model_and_input(
     sparse_device: Optional[torch.device] = None,
     dedup_feature_names: Optional[List[str]] = None,
     dedup_tables: Optional[List[EmbeddingTableConfig]] = None,
+    variable_batch_size: bool = False,
+    batch_size: int = 4,
 ) -> Tuple[nn.Module, List[Tuple[ModelInput, List[ModelInput]]]]:
     torch.manual_seed(0)
     if dedup_feature_names:
@@ -171,6 +181,8 @@ def gen_model_and_input(
             generate=generate,
             weighted_tables=weighted_tables,
             num_float_features=num_float_features,
+            variable_batch_size=variable_batch_size,
+            batch_size=batch_size,
         )
     ]
     return (model, inputs)
@@ -226,9 +238,11 @@ def sharding_single_rank_test(
     constraints: Optional[Dict[str, ParameterConstraints]] = None,
     local_size: Optional[int] = None,
     qcomms_config: Optional[QCommsConfig] = None,
-    apply_overlapped_optimizer_config: Optional[
+    apply_optimizer_in_backward_config: Optional[
         Dict[str, Tuple[Type[torch.optim.Optimizer], Dict[str, Any]]]
     ] = None,
+    variable_batch_size: bool = False,
+    batch_size: int = 4,
 ) -> None:
 
     with MultiProcessContext(rank, world_size, backend, local_size) as ctx:
@@ -240,6 +254,8 @@ def sharding_single_rank_test(
             embedding_groups=embedding_groups,
             world_size=world_size,
             num_float_features=16,
+            variable_batch_size=variable_batch_size,
+            batch_size=batch_size,
         )
         global_model = global_model.to(ctx.device)
         global_input = inputs[0][0].to(ctx.device)
@@ -258,20 +274,20 @@ def sharding_single_rank_test(
         global_model_named_params_as_dict = dict(global_model.named_parameters())
         local_model_named_params_as_dict = dict(local_model.named_parameters())
 
-        if apply_overlapped_optimizer_config is not None:
+        if apply_optimizer_in_backward_config is not None:
             for apply_optim_name, (
                 optimizer_type,
                 optimizer_kwargs,
-            ) in apply_overlapped_optimizer_config.items():
+            ) in apply_optimizer_in_backward_config.items():
                 for name, param in global_model_named_params_as_dict.items():
                     if name not in apply_optim_name:
                         continue
                     assert name in local_model_named_params_as_dict
                     local_param = local_model_named_params_as_dict[name]
-                    apply_overlapped_optimizer(
+                    apply_optimizer_in_backward(
                         optimizer_type, [param], optimizer_kwargs
                     )
-                    apply_overlapped_optimizer(
+                    apply_optimizer_in_backward(
                         optimizer_type, [local_param], optimizer_kwargs
                     )
 
@@ -349,7 +365,7 @@ def sharding_single_rank_test(
 
         # Compare predictions of sharded vs unsharded models.
         if qcomms_config is None:
-            torch.testing.assert_allclose(global_pred, torch.cat(all_local_pred))
+            torch.testing.assert_close(global_pred, torch.cat(all_local_pred))
         else:
             # With quantized comms, we can relax constraints a bit
             rtol = 0.003
@@ -358,8 +374,8 @@ def sharding_single_rank_test(
                 qcomms_config.backward_precision,
             ]:
                 rtol = 0.05
-            atol = global_pred.max() * rtol
-            torch.testing.assert_allclose(
+            atol = global_pred.max().item() * rtol
+            torch.testing.assert_close(
                 global_pred, torch.cat(all_local_pred), rtol=rtol, atol=atol
             )
 

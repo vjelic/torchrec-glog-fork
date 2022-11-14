@@ -514,14 +514,12 @@ def _maybe_compute_length_per_key(
 ) -> List[int]:
     if length_per_key is None:
         if len(keys) and offsets is not None and len(offsets) > 0:
-            _length: List[int] = (
-                torch.sum((offsets[1:] - offsets[:-1]).view(-1, stride), dim=1)
-                .cpu()
-                .tolist()
-            )
+            _length: List[int] = torch.sum(
+                torch.diff(offsets).view(-1, stride), dim=1
+            ).tolist()
         elif len(keys) and lengths is not None:
             _length: List[int] = (
-                torch.sum(lengths.view(-1, stride), dim=1).cpu().tolist()
+                torch.sum(lengths.view(-1, stride), dim=1).tolist()
                 if lengths.numel() != 0
                 else [0] * len(keys)
             )
@@ -573,6 +571,45 @@ def _jagged_tensor_string(
         )
         + "\n    }"
     )
+
+
+class ComputeKJTToJTDict(torch.nn.Module):
+    """Converts a KeyedJaggedTensor to a dict of JaggedTensors.
+
+    Example::
+        #              0       1        2  <-- dim_1
+        # "Feature0"   [V0,V1] None    [V2]
+        # "Feature1"   [V3]    [V4]    [V5,V6,V7]
+        #   ^
+        #  dim_0
+
+        would return
+
+        {
+            "Feature0": JaggedTensor([[V0,V1],None,V2]),
+            "Feature1": JaggedTensor([V3,V4,[V5,V6,V7]]),
+        }
+    """
+
+    def forward(
+        self, keyed_jagged_tensor: "KeyedJaggedTensor"
+    ) -> Dict[str, JaggedTensor]:
+        """
+        Converts a KeyedJaggedTensor into a dict of JaggedTensors.
+        Args:
+            keyed_jagged_tensor (KeyedJaggedTensor): tensor to convert
+        Returns:
+            Dict[str, JaggedTensor]
+        """
+        return _maybe_compute_kjt_to_jt_dict(
+            stride=keyed_jagged_tensor.stride(),
+            keys=keyed_jagged_tensor.keys(),
+            length_per_key=keyed_jagged_tensor.length_per_key(),
+            values=keyed_jagged_tensor.values(),
+            lengths=keyed_jagged_tensor.lengths(),
+            weights=keyed_jagged_tensor.weights_or_none(),
+            jt_dict=keyed_jagged_tensor._jt_dict,
+        )
 
 
 def _maybe_compute_kjt_to_jt_dict(

@@ -15,6 +15,7 @@ import torch.nn as nn
 import torch.quantization as quant
 import torchrec as trec
 import torchrec.quant as trec_quant
+from torchrec.distributed.utils import copy_to_device
 from torchrec.modules.embedding_modules import (
     EmbeddingBagCollectionInterface,
     EmbeddingCollectionInterface,
@@ -64,6 +65,18 @@ def quantize_embeddings(
         mapping=mapping,
         inplace=inplace,
     )
+
+
+class CopyableMixin(nn.Module):
+    def copy(
+        self,
+        device: torch.device,
+    ) -> nn.Module:
+        return copy_to_device(
+            self,
+            current_device=torch.device("cpu"),
+            to_device=device,
+        )
 
 
 @dataclass
@@ -144,6 +157,12 @@ class PredictFactory(abc.ABC):
     def qualname_metadata(self) -> Dict[str, QualNameMetadata]:
         """
         Returns a dict from qualname (method name) to QualNameMetadata. This is additional information for execution of specific methods of the model.
+        """
+        return {}
+
+    def model_inputs_data(self) -> Dict[str, Any]:
+        """
+        Returns a dict of various data for benchmarking input generation.
         """
         return {}
 

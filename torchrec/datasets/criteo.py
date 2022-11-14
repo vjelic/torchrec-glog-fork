@@ -267,11 +267,13 @@ class BinaryCriteoUtils:
             return shape
 
     @staticmethod
-    def get_file_idx_to_row_range(
+    def get_file_row_ranges_and_remainder(
         lengths: List[int],
         rank: int,
         world_size: int,
-    ) -> Dict[int, Tuple[int, int]]:
+        start_row: int = 0,
+        last_row: Optional[int] = None,
+    ) -> Tuple[Dict[int, Tuple[int, int]], int]:
         """
         Given a rank, world_size, and the lengths (number of rows) for a list of files,
         return which files and which portions of those files (represented as row ranges
@@ -288,22 +290,34 @@ class BinaryCriteoUtils:
             world_size (int): world size.
 
         Returns:
-            output (Dict[int, Tuple[int, int]]): Mapping of which files to the range in
-                those files to be handled by the rank. The keys of this dict are indices
-                of lengths.
+            output (Tuple[Dict[int, Tuple[int, int]], int]): First item is a mapping of files
+            to the range in those files to be handled by the rank. The keys of this dict are indices.
+            The second item is the remainder of dataset length / world size.
         """
 
         # All ..._g variables are globals indices (meaning they range from 0 to
         # total_length - 1). All ..._l variables are local indices (meaning they range
         # from 0 to lengths[i] - 1 for the ith file).
-
-        total_length = sum(lengths)
+        if last_row is None:
+            total_length = sum(lengths) - start_row
+        else:
+            total_length = last_row - start_row + 1
         rows_per_rank = total_length // world_size
+        remainder = total_length % world_size
 
         # Global indices that rank is responsible for. All ranges (left, right) are
         # inclusive.
-        rank_left_g = rank * rows_per_rank
-        rank_right_g = (rank + 1) * rows_per_rank - 1
+        if rank < remainder:
+            rank_left_g = rank * (rows_per_rank + 1)
+            rank_right_g = (rank + 1) * (rows_per_rank + 1) - 1
+        else:
+            rank_left_g = (
+                remainder * (rows_per_rank + 1) + (rank - remainder) * rows_per_rank
+            )
+            rank_right_g = rank_left_g + rows_per_rank - 1
+
+        rank_left_g += start_row
+        rank_right_g += start_row
 
         output = {}
 
@@ -325,7 +339,7 @@ class BinaryCriteoUtils:
                 overlap_right_l = overlap_right_g - file_left_g
                 output[idx] = (overlap_left_l, overlap_right_l)
 
-        return output
+        return output, remainder
 
     @staticmethod
     def load_npy_range(
@@ -358,7 +372,7 @@ class BinaryCriteoUtils:
             if len(shape) == 2:
                 total_rows, row_size = shape
             else:
-                raise ValueError("Cannot load range for npy with ndim == 2.")
+                raise ValueError("Cannot load range for npy with ndim != 2.")
 
             if not (0 <= start_row < total_rows):
                 raise ValueError(
@@ -523,7 +537,7 @@ class BinaryCriteoUtils:
             output_dir_full_set (str): Output directory of the full dataset, if desired.
             days (int): Number of day files.
             int_columns (int): Number of columns with dense features.
-            columns (int): Total number of columns.
+            sparse_columns (int): Total number of categorical columns.
             path_manager_key (str): Path manager key used to load from different filesystems.
             random_seed (int): Random seed used for the random.shuffle operator.
         """
@@ -633,10 +647,12 @@ class BinaryCriteoUtils:
             curr_first_row = curr_last_row
 
         # Directly copy over the last day's files since they will be used for validation and testing.
-        for part in ["dense", "sparse", "labels"]:
-            path_to_original = os.path.join(
-                input_dir_sparse, f"day_{days-1}_{part}.npy"
-            )
+        for (part, input_dir) in [
+            ("sparse", input_dir_sparse),
+            ("dense", input_dir_labels_and_dense),
+            ("labels", input_dir_labels_and_dense),
+        ]:
+            path_to_original = os.path.join(input_dir, f"day_{days-1}_{part}.npy")
             val_train_path = os.path.join(
                 output_dir_shuffled, f"day_{days-1}_{part}.npy"
             )
@@ -710,12 +726,16 @@ class InMemoryBinaryCriteoIterDataPipe(IterableDataset):
 
         self._load_data_for_rank()
         self.num_rows_per_file: List[int] = [a.shape[0] for a in self.dense_arrs]
-        self.num_batches: int = math.ceil(sum(self.num_rows_per_file) / batch_size)
+        cur_rank_dataset_len = sum(self.num_rows_per_file)
+        if self.rank < self.remainder:
+            self.num_batches: int = math.ceil((cur_rank_dataset_len - 1) / batch_size)
+        else:
+            self.num_batches: int = math.ceil(cur_rank_dataset_len / batch_size)
 
         # These values are the same for the KeyedJaggedTensors in all batches, so they
         # are computed once here. This avoids extra work from the KeyedJaggedTensor sync
         # functions.
-        self._num_ids_in_batch: int = CAT_FEATURE_COUNT * batch_size
+        self._num_ids_in_batch: int = CAT_FEATURE_COUNT * (batch_size + 1)
         self.keys: List[str] = DEFAULT_CAT_NAMES
         self.lengths: torch.Tensor = torch.ones(
             (self._num_ids_in_batch,), dtype=torch.int32
@@ -723,6 +743,7 @@ class InMemoryBinaryCriteoIterDataPipe(IterableDataset):
         self.offsets: torch.Tensor = torch.arange(
             0, self._num_ids_in_batch + 1, dtype=torch.int32
         )
+        self._num_ids_in_batch -= CAT_FEATURE_COUNT
         self.length_per_key: List[int] = CAT_FEATURE_COUNT * [batch_size]
         self.offset_per_key: List[int] = [
             batch_size * i for i in range(CAT_FEATURE_COUNT + 1)
@@ -732,41 +753,38 @@ class InMemoryBinaryCriteoIterDataPipe(IterableDataset):
         }
 
     def _load_data_for_rank(self) -> None:
-        if self.stage == "train":
-            file_idx_to_row_range = BinaryCriteoUtils.get_file_idx_to_row_range(
-                lengths=[
-                    BinaryCriteoUtils.get_shape_from_npy(
-                        path, path_manager_key=self.path_manager_key
-                    )[0]
-                    for path in self.dense_paths
-                ],
-                rank=self.rank,
-                world_size=self.world_size,
-            )
-        elif self.stage in ["val", "test"]:
+        start_row, last_row = 0, None
+        if self.stage in ["val", "test"]:
             # Last day's dataset is split into 2 sets: 1st half for "val"; 2nd for "test"
             samples_in_file = BinaryCriteoUtils.get_shape_from_npy(
                 self.dense_paths[0], path_manager_key=self.path_manager_key
             )[0]
-
-            dataset_start = 0
+            start_row = 0
             dataset_len = int(np.ceil(samples_in_file / 2.0))
-
             if self.stage == "test":
-                dataset_start = dataset_len
-                dataset_len = samples_in_file - dataset_len
-            segment_len = dataset_len // self.world_size
-            rank_start_row = dataset_start + self.rank * segment_len
+                start_row = dataset_len
+                dataset_len = samples_in_file - start_row
+            last_row = start_row + dataset_len - 1
 
-            rank_last_row = rank_start_row + segment_len - 1
-            file_idx_to_row_range = {0: (rank_start_row, rank_last_row)}
-
+        row_ranges, remainder = BinaryCriteoUtils.get_file_row_ranges_and_remainder(
+            lengths=[
+                BinaryCriteoUtils.get_shape_from_npy(
+                    path, path_manager_key=self.path_manager_key
+                )[0]
+                for path in self.dense_paths
+            ],
+            rank=self.rank,
+            world_size=self.world_size,
+            start_row=start_row,
+            last_row=last_row,
+        )
+        self.remainder = remainder
         self.dense_arrs, self.sparse_arrs, self.labels_arrs = [], [], []
         for arrs, paths in zip(
             [self.dense_arrs, self.sparse_arrs, self.labels_arrs],
             [self.dense_paths, self.sparse_paths, self.labels_paths],
         ):
-            for idx, (range_left, range_right) in file_idx_to_row_range.items():
+            for idx, (range_left, range_right) in row_ranges.items():
                 arrs.append(
                     BinaryCriteoUtils.load_npy_range(
                         paths[idx],
@@ -842,15 +860,18 @@ class InMemoryBinaryCriteoIterDataPipe(IterableDataset):
         file_idx = 0
         row_idx = 0
         batch_idx = 0
+        cur_batch_size = self.batch_size
         while batch_idx < self.num_batches:
             buffer_row_count = 0 if buffer is None else none_throws(buffer)[0].shape[0]
-            if buffer_row_count == self.batch_size or file_idx == len(self.dense_arrs):
+            if buffer_row_count == cur_batch_size or file_idx == len(self.dense_arrs):
                 yield self._np_arrays_to_batch(*none_throws(buffer))
                 batch_idx += 1
                 buffer = None
+                if batch_idx + 1 == self.num_batches and self.rank < self.remainder:
+                    cur_batch_size += 1
             else:
                 rows_to_get = min(
-                    self.batch_size - buffer_row_count,
+                    cur_batch_size - buffer_row_count,
                     self.num_rows_per_file[file_idx] - row_idx,
                 )
                 slice_ = slice(row_idx, row_idx + rows_to_get)
